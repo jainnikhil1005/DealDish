@@ -50,6 +50,7 @@ io.on('connection', (socket) => {
 
 // Routes
 app.use('/api/auth', require('./routes/authRoutes'));
+app.use('/api/shopping-list', require('./routes/shoppingListRoutes'));
 
 app.get('/', (req, res) => {
   res.send('DealDish API is running!');
