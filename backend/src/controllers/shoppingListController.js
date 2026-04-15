@@ -1,6 +1,18 @@
 const ShoppingList = require('../models/ShoppingList');
 const GroceryItem = require('../models/GroceryItem');
 
+// @desc    Get active shopping list for the logged-in user
+// @route   GET /api/shopping-list
+// @access  Private
+const getActiveList = async (req, res) => {
+  try {
+    const list = await ShoppingList.findOne({ user: req.user._id, status: 'active' });
+    res.status(200).json(list || { items: [], totalCost: 0, status: 'active' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server Error' });
+  }
+};
+
 // @desc    Add item to shopping list (finding cheapest option)
 // @route   POST /api/shopping-list/add
 // @access  Private
@@ -111,4 +123,4 @@ const addRecipeToList = async (req, res) => {
   }
 }
 
-module.exports = { addItemToList, addRecipeToList };
+module.exports = { getActiveList, addItemToList, addRecipeToList };

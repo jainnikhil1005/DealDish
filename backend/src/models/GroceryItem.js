@@ -4,7 +4,7 @@ const groceryItemSchema = new mongoose.Schema({
   name: {
     type: String,
     required: true,
-    index: true // index for faster searches when cross-referencing
+    index: true
   },
   store: {
     type: String,
@@ -14,9 +14,25 @@ const groceryItemSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  originalPrice: {
+    type: Number,
+    default: null
+  },
   unit: {
     type: String,
     required: true
+  },
+  category: {
+    type: String,
+    default: 'General'
+  },
+  imageUrl: {
+    type: String,
+    default: null
+  },
+  isOnSale: {
+    type: Boolean,
+    default: false
   },
   lastUpdated: {
     type: Date,
