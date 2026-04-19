@@ -3,16 +3,9 @@ import React, { createContext, useState, useContext, useEffect } from 'react';
 const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [token, setToken] = useState(localStorage.getItem('token') || null);
-
-  useEffect(() => {
-    if (token) {
-      // Mocking User hydration for UI testing purposes
-      // In production, we decode JWT or fetch from /api/auth/me
-      setUser({ _id: '12345', name: 'Demo User', email: 'demo@dealdish.test' }); 
-    }
-  }, [token]);
+  const DEMO_USER = { _id: '12345', name: 'Demo User', email: 'demo@dealdish.test' };
+  const [user, setUser] = useState(DEMO_USER);
+  const [token, setToken] = useState('demo-token');
 
   const login = (newToken, userData) => {
     localStorage.setItem('token', newToken);

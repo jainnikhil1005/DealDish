@@ -332,7 +332,7 @@ const Deals = () => {
               <>
                 <strong style={{ color: 'white' }}>{data.total}</strong> items across{' '}
                 <strong style={{ color: 'white' }}>{data.stores?.length}</strong> stores
-                {saleCount > 0 && <> · <strong style={{ color: '#86efac' }}>{saleCount} on sale</>}</>}
+                {saleCount > 0 && <> · <strong style={{ color: '#86efac' }}>{saleCount} on sale</strong></>}
               </>
             ) : 'Scrape stores to see current deals.'}
           </p>
