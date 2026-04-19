@@ -1,30 +1,28 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
 
-const protect = async (req, res, next) => {
-  let token;
+const DEMO_USER = { _id: '12345', name: 'Demo User', email: 'demo@dealdish.test' };
 
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+const protect = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  // Demo token — pass straight through without DB lookup
+  if (authHeader && authHeader.split(' ')[1] === 'demo-token') {
+    req.user = DEMO_USER;
+    return next();
+  }
+
+  if (authHeader && authHeader.startsWith('Bearer')) {
     try {
-      // Get token from header
-      token = req.headers.authorization.split(' ')[1];
-
-      // Verify token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-      // Get user from the token without password
-      req.user = await User.findById(decoded.id).select('-password');
-
-      next();
-    } catch (error) {
-      console.error(error);
-      res.status(401).json({ message: 'Not authorized, token failed' });
+      const token = authHeader.split(' ')[1];
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+      req.user = { _id: decoded.id };
+      return next();
+    } catch {
+      return res.status(401).json({ message: 'Not authorized, token failed' });
     }
   }
 
-  if (!token) {
-    res.status(401).json({ message: 'Not authorized, no token' });
-  }
+  res.status(401).json({ message: 'Not authorized, no token' });
 };
 
 module.exports = { protect };

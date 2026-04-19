@@ -1,43 +1,45 @@
-const GroceryItem = require('../models/GroceryItem');
 const { scrapeAllStores } = require('../services/scraperService');
 
-// @desc    Get all current deals from DB, grouped by store
+// In-memory cache — survives without MongoDB
+let cache = { items: [], lastUpdated: null };
+
+// @desc    Get all current deals, grouped by store
 // @route   GET /api/deals
 // @access  Public
 const getDeals = async (req, res) => {
   try {
     const { store, category, onSale } = req.query;
-    const filter = {};
-    if (store) filter.store = store;
-    if (category) filter.category = category;
-    if (onSale === 'true') filter.isOnSale = true;
 
-    const items = await GroceryItem.find(filter).sort({ isOnSale: -1, price: 1 });
+    let items = cache.items;
+    if (store)           items = items.filter(i => i.store === store);
+    if (category)        items = items.filter(i => i.category === category);
+    if (onSale === 'true') items = items.filter(i => i.isOnSale);
 
-    // Group by store for the frontend
     const grouped = items.reduce((acc, item) => {
       if (!acc[item.store]) acc[item.store] = [];
       acc[item.store].push(item);
       return acc;
     }, {});
 
-    // Metadata
-    const categories = [...new Set(items.map(i => i.category))].sort();
-    const stores = [...new Set(items.map(i => i.store))].sort();
-    const lastUpdated = items.length > 0
-      ? items.reduce((latest, i) => i.updatedAt > latest ? i.updatedAt : latest, items[0].updatedAt)
-      : null;
+    const categories = [...new Set(cache.items.map(i => i.category))].sort();
+    const stores     = [...new Set(cache.items.map(i => i.store))].sort();
 
-    res.json({ grouped, categories, stores, total: items.length, lastUpdated });
+    res.json({
+      grouped,
+      categories,
+      stores,
+      total: items.length,
+      lastUpdated: cache.lastUpdated,
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Server Error' });
   }
 };
 
-// @desc    Trigger a fresh scrape and upsert results into DB
+// @desc    Trigger a fresh scrape and store results in memory
 // @route   POST /api/deals/scrape
-// @access  Public (rate-limited in production; demo uses no auth for ease)
+// @access  Public
 const triggerScrape = async (req, res) => {
   try {
     console.log('[Scraper] Manual scrape triggered via API');
@@ -47,20 +49,16 @@ const triggerScrape = async (req, res) => {
       return res.status(500).json({ message: 'Scraper returned no results.' });
     }
 
-    // Upsert: update by name+store pair to avoid duplicates on repeated scrapes
-    const ops = items.map(item => ({
-      updateOne: {
-        filter: { name: item.name, store: item.store },
-        update: { $set: { ...item, lastUpdated: new Date() } },
-        upsert: true,
-      },
-    }));
-
-    const result = await GroceryItem.bulkWrite(ops);
+    // Upsert into in-memory cache by name+store key
+    const map = new Map(cache.items.map(i => [`${i.store}::${i.name}`, i]));
+    for (const item of items) {
+      map.set(`${item.store}::${item.name}`, { ...item, _id: `${item.store}-${item.name}`.replace(/\s+/g, '-') });
+    }
+    cache.items = [...map.values()];
+    cache.lastUpdated = new Date();
 
     const stores = [...new Set(items.map(i => i.store))];
 
-    // Broadcast to all connected clients via Socket.io
     if (req.io) {
       req.io.emit('deals_updated', {
         message: `Deal data refreshed — ${items.length} items from ${stores.join(', ')}`,
@@ -71,9 +69,8 @@ const triggerScrape = async (req, res) => {
     }
 
     res.json({
-      message: `Scrape complete. ${items.length} items upserted.`,
-      upserted: result.upsertedCount,
-      modified: result.modifiedCount,
+      message: `Scrape complete. ${items.length} items loaded.`,
+      total: cache.items.length,
       fallbackUsed,
       report,
     });
@@ -83,4 +80,36 @@ const triggerScrape = async (req, res) => {
   }
 };
 
-module.exports = { getDeals, triggerScrape };
+// GET /api/deals/compare?ingredient=chicken
+// Returns all matching items across stores sorted cheapest first
+const comparePrice = (req, res) => {
+  const { ingredient } = req.query;
+  if (!ingredient) return res.status(400).json({ message: 'ingredient query param is required' });
+
+  const regex = new RegExp(ingredient, 'i');
+  const matches = cache.items
+    .filter(i => regex.test(i.name))
+    .sort((a, b) => a.price - b.price);
+
+  if (!matches.length) {
+    return res.status(404).json({ message: `No items found matching "${ingredient}"` });
+  }
+
+  const cheapest = matches[0];
+  const savings = matches.length > 1
+    ? parseFloat((matches[matches.length - 1].price - cheapest.price).toFixed(2))
+    : 0;
+
+  res.json({
+    ingredient,
+    results: matches,
+    cheapest,
+    mostExpensive: matches[matches.length - 1],
+    maxSavings: savings,
+    storesChecked: [...new Set(matches.map(i => i.store))],
+  });
+};
+
+const getCacheItems = () => cache.items;
+
+module.exports = { getDeals, triggerScrape, comparePrice, getCacheItems };

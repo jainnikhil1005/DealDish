@@ -1,126 +1,146 @@
-const ShoppingList = require('../models/ShoppingList');
-const GroceryItem = require('../models/GroceryItem');
+// In-memory shopping list store — keyed by userId
+const lists = {};
 
-// @desc    Get active shopping list for the logged-in user
-// @route   GET /api/shopping-list
-// @access  Private
-const getActiveList = async (req, res) => {
-  try {
-    const list = await ShoppingList.findOne({ user: req.user._id, status: 'active' });
-    res.status(200).json(list || { items: [], totalCost: 0, status: 'active' });
-  } catch (error) {
-    res.status(500).json({ message: 'Server Error' });
-  }
-};
-
-// @desc    Add item to shopping list (finding cheapest option)
-// @route   POST /api/shopping-list/add
-// @access  Private
-const addItemToList = async (req, res) => {
-  const { ingredientName, quantityNeeded } = req.body;
-
-  if (!ingredientName || !quantityNeeded) {
-    return res.status(400).json({ message: 'Please provide ingredientName and quantityNeeded' });
-  }
-
-  try {
-    // 1. Find the cheapest matching grocery item on the market
-    const cheapestItem = await GroceryItem.findOne({ 
-      name: { $regex: ingredientName, $options: 'i' } 
-    }).sort({ price: 1 });
-
-    if (!cheapestItem) {
-      return res.status(404).json({ message: `No grocery item found for ${ingredientName}` });
-    }
-
-    // 2. Find or create an active shopping list for the user
-    let list = await ShoppingList.findOne({ user: req.user._id, status: 'active' });
-    if (!list) {
-      list = await ShoppingList.create({ user: req.user._id, items: [], totalCost: 0 });
-    }
-
-    // 3. Add to list and calculate contribution to total cost
-    const itemCost = cheapestItem.price * quantityNeeded;
-    list.items.push({
-      groceryItem: cheapestItem._id,
-      ingredientName,
-      quantityNeeded,
-      estimatedCost: itemCost
-    });
-
-    list.totalCost += itemCost;
-    await list.save();
-
-    // 4. Emit WebSocket notification for real-time list updates
-    if (req.io) {
-      req.io.to(`user_${req.user._id}`).emit('list_updated', {
-        message: `Optimization complete: ${ingredientName} added from ${cheapestItem.store}`,
-        addedItem: ingredientName,
-        totalCost: list.totalCost
-      });
-    }
-
-    res.status(200).json(list);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Server Error', error: error.message });
-  }
-};
-
-// @desc    Add full recipe into shopping list
-// @route   POST /api/shopping-list/add-recipe
-// @access  Private
-const addRecipeToList = async (req, res) => {
-  const { recipeId } = req.body;
-  const Recipe = require('../models/Recipe');
-  
-  try {
-    const recipe = await Recipe.findById(recipeId);
-    if (!recipe) {
-      return res.status(404).json({ message: 'Recipe not found' });
-    }
-
-    let list = await ShoppingList.findOne({ user: req.user._id, status: 'active' });
-    if (!list) {
-      list = await ShoppingList.create({ user: req.user._id, items: [], totalCost: 0 });
-    }
-
-    let addedItemsCount = 0;
-    
-    // Concurrently process all recipe ingredients to find the best supermarket price
-    await Promise.all(recipe.ingredients.map(async (ingredient) => {
-      const cheapestItem = await GroceryItem.findOne({ 
-        name: { $regex: ingredient.name, $options: 'i' } 
-      }).sort({ price: 1 });
-      
-      if (cheapestItem) {
-        const itemCost = cheapestItem.price * ingredient.quantity;
-        list.items.push({
-          groceryItem: cheapestItem._id,
-          ingredientName: ingredient.name,
-          quantityNeeded: ingredient.quantity,
-          estimatedCost: itemCost
-        });
-        list.totalCost += itemCost;
-        addedItemsCount++;
-      }
-    }));
-    
-    await list.save();
-
-    // Broadcast update 
-    if (req.io) {
-      req.io.to(`user_${req.user._id}`).emit('list_updated', {
-        message: `Successfully generated meals: ${addedItemsCount} components added from '${recipe.title}'`,
-        totalCost: list.totalCost
-      });
-    }
-    
-    res.status(200).json(list);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Server error processing recipe' });
-  }
+function getList(userId) {
+  if (!lists[userId]) lists[userId] = { items: [], totalCost: 0, status: 'active' };
+  return lists[userId];
 }
 
-module.exports = { getActiveList, addItemToList, addRecipeToList };
+function recalcTotal(list) {
+  list.totalCost = parseFloat(
+    list.items.reduce((sum, i) => sum + i.estimatedCost, 0).toFixed(2)
+  );
+}
+
+function findCheapest(ingredientName, dealItems) {
+  const regex = new RegExp(ingredientName, 'i');
+  const matches = dealItems.filter(i => regex.test(i.name));
+  if (!matches.length) return null;
+  return matches.reduce((a, b) => a.price < b.price ? a : b);
+}
+
+// GET /api/shopping-list
+const getActiveList = (req, res) => {
+  const userId = req.user?._id || 'demo';
+  res.status(200).json(getList(userId));
+};
+
+// POST /api/shopping-list/add
+const addItemToList = (req, res) => {
+  const { ingredientName, quantityNeeded } = req.body;
+  if (!ingredientName || !quantityNeeded) {
+    return res.status(400).json({ message: 'ingredientName and quantityNeeded are required' });
+  }
+
+  const userId = req.user?._id || 'demo';
+  const list = getList(userId);
+  const dealItems = require('./dealsController').getCacheItems();
+  const cheapest = findCheapest(ingredientName, dealItems);
+  const unitPrice = cheapest?.price ?? 1.99;
+  const itemCost = parseFloat((unitPrice * quantityNeeded).toFixed(2));
+
+  const item = {
+    _id: `item-${Date.now()}`,
+    ingredientName,
+    quantityNeeded,
+    estimatedCost: itemCost,
+    unitPrice,
+    store: cheapest?.store || 'Best Price',
+  };
+
+  list.items.push(item);
+  recalcTotal(list);
+
+  if (req.io) {
+    req.io.to(`user_${userId}`).emit('list_updated', {
+      message: `Added ${ingredientName} from ${item.store} @ $${unitPrice.toFixed(2)}`,
+      addedItem: ingredientName,
+      totalCost: list.totalCost,
+    });
+  }
+
+  res.status(200).json(list);
+};
+
+// POST /api/shopping-list/add-recipe
+const addRecipeToList = (req, res) => {
+  const { recipeId } = req.body;
+  if (!recipeId) return res.status(400).json({ message: 'recipeId is required' });
+
+  const recipes = require('./recipeController').getRecipesData();
+  const recipe = recipes.find(r => r._id === recipeId);
+  if (!recipe) return res.status(404).json({ message: 'Recipe not found' });
+
+  const userId = req.user?._id || 'demo';
+  const list = getList(userId);
+  const dealItems = require('./dealsController').getCacheItems();
+
+  let addedCount = 0;
+  for (const ingredient of recipe.ingredients) {
+    const cheapest = findCheapest(ingredient.name, dealItems);
+    const unitPrice = cheapest?.price ?? 1.99;
+    const itemCost = parseFloat((unitPrice * ingredient.quantity).toFixed(2));
+
+    list.items.push({
+      _id: `item-${Date.now()}-${addedCount}`,
+      ingredientName: ingredient.name,
+      quantityNeeded: ingredient.quantity,
+      estimatedCost: itemCost,
+      unitPrice,
+      store: cheapest?.store || 'Best Price',
+    });
+    addedCount++;
+  }
+
+  recalcTotal(list);
+
+  if (req.io) {
+    req.io.to(`user_${userId}`).emit('list_updated', {
+      message: `Added ${addedCount} ingredients from "${recipe.title}"`,
+      totalCost: list.totalCost,
+    });
+  }
+
+  res.status(200).json(list);
+};
+
+// PUT /api/shopping-list/item/:itemId
+const updateItem = (req, res) => {
+  const { quantityNeeded } = req.body;
+  if (!quantityNeeded || quantityNeeded <= 0) {
+    return res.status(400).json({ message: 'quantityNeeded must be a positive number' });
+  }
+
+  const userId = req.user?._id || 'demo';
+  const list = getList(userId);
+  const item = list.items.find(i => i._id === req.params.itemId);
+  if (!item) return res.status(404).json({ message: 'Item not found' });
+
+  item.quantityNeeded = quantityNeeded;
+  item.estimatedCost = parseFloat((item.unitPrice * quantityNeeded).toFixed(2));
+  recalcTotal(list);
+
+  res.status(200).json(list);
+};
+
+// DELETE /api/shopping-list/item/:itemId
+const removeItem = (req, res) => {
+  const userId = req.user?._id || 'demo';
+  const list = getList(userId);
+  const idx = list.items.findIndex(i => i._id === req.params.itemId);
+  if (idx === -1) return res.status(404).json({ message: 'Item not found' });
+
+  list.items.splice(idx, 1);
+  recalcTotal(list);
+
+  res.status(200).json(list);
+};
+
+// DELETE /api/shopping-list/clear
+const clearList = (req, res) => {
+  const userId = req.user?._id || 'demo';
+  lists[userId] = { items: [], totalCost: 0, status: 'active' };
+  res.status(200).json(lists[userId]);
+};
+
+module.exports = { getActiveList, addItemToList, addRecipeToList, updateItem, removeItem, clearList };
