@@ -3,13 +3,8 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const connectDB = require('./config/db');
-
 // Load env vars
 dotenv.config();
-
-// Connect to database
-// connectDB(); // Uncomment when MongoDB URI is set in .env
 
 const app = express();
 const server = http.createServer(app);
